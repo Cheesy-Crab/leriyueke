@@ -220,10 +220,7 @@
       index: 0,
       total: cards.length,
       answers: [],
-      wrong: [],
-      locked: false,
-      requeue: false,
-      requeueUsed: false
+      locked: false
     };
     state.screen = 'practice';
     setTitle(skill.title);
@@ -244,7 +241,7 @@
           '<div class="practice-timer" id="practiceTimer">0.0s</div>' +
         '</div>' +
         '<div class="exit-confirm" id="exitConfirm" hidden>' +
-          '<p>本轮还没做完，退出不会记录成绩。</p>' +
+          '<p class="exit-msg">本轮还没做完，退出不会记录成绩。</p>' +
           '<div class="exit-actions">' +
             '<button class="btn btn-ghost" type="button" data-action="exit-no">继续练</button>' +
             '<button class="btn btn-danger" type="button" data-action="exit-yes">退出</button>' +
@@ -292,8 +289,7 @@
     var session = state.session;
     var html = '';
     for (var i = 0; i < session.total; i++) {
-      var cls = session.requeue ? 'is-done'
-        : (i < session.index ? 'is-done' : i === session.index ? 'is-now' : '');
+      var cls = i < session.index ? 'is-done' : i === session.index ? 'is-now' : '';
       html += '<i class="' + cls + '"></i>';
     }
     document.getElementById('progress').innerHTML = html;
@@ -326,8 +322,7 @@
     session.locked = true;
     stopTick();
 
-    session.answers.push({ card: card, value: value, ok: ok, ms: ms, requeue: session.requeue });
-    if (!session.requeue && !ok) session.wrong.push(card);
+    session.answers.push({ card: card, value: value, ok: ok, ms: ms });
 
     // 先排好下一题：后面任何一步出错（画反馈、播声音）都不会把整轮卡死
     state.advanceTimer = setTimeout(nextCard, ok ? 1100 : 2200);
@@ -394,18 +389,7 @@
       return;
     }
 
-    // 第一遍结束：有错题就先重练一遍（不计成绩）
-    if (!session.requeueUsed && session.wrong.length) {
-      session.requeueUsed = true;
-      session.requeue = true;
-      session.cards = session.wrong.slice();
-      session.index = 0;
-      paintCard();
-      document.getElementById('stageQ').textContent = '错题重练 · 再认一次';
-      document.getElementById('stageHint').textContent = '这一遍不计入成绩';
-      return;
-    }
-
+    // 12 题答完就直接结算；错题在结果页单独重练，不再自动加一轮
     finishSession();
   }
 
@@ -415,12 +399,12 @@
     var skill = state.skill;
     if (!session || !skill) return;
 
-    var first = session.answers.filter(function (a) { return !a.requeue; });
-    if (!first.length) { goHome(true); return; }
+    var answered = session.answers;
+    if (!answered.length) { goHome(true); return; }
 
-    var total = first.length;
-    var correct = first.filter(function (a) { return a.ok; }).length;
-    var ms = first.reduce(function (sum, a) { return sum + a.ms; }, 0);
+    var total = answered.length;
+    var correct = answered.filter(function (a) { return a.ok; }).length;
+    var ms = answered.reduce(function (sum, a) { return sum + a.ms; }, 0);
     var standardMs = total === 12 ? 45000 : null;
     var pass = standardMs === null ? null : (correct === total && ms <= standardMs);
 
@@ -435,8 +419,8 @@
       avg: total ? ms / total : 0,
       pass: pass,
       standardMs: standardMs,
-      wrong: first.filter(function (a) { return !a.ok; }),
-      slow: first.filter(function (a) { return a.ok && a.ms > 3000; }),
+      wrong: answered.filter(function (a) { return !a.ok; }),
+      slow: answered.filter(function (a) { return a.ok && a.ms > 3000; }),
       round: round
     };
 
@@ -496,7 +480,7 @@
       headline = '对了 ' + r.correct + ' 个。';
       badge = miss === 1 ? '先把错的那 1 个音认熟' : '先把错的 ' + miss + ' 个音认熟';
       badgeCls = 'is-todo';
-      sub = '错题已经自动重练过一遍。今天只做「只练错题」，比整轮重刷更有效。';
+      sub = '错题在下面。点「只练这 ' + miss + ' 个音」单独过一遍，比整轮重刷更有效。';
     } else {
       headline = r.correct === r.total ? '这 ' + r.total + ' 个音，全对。' : '对了 ' + r.correct + ' / ' + r.total + ' 个。';
       badge = '错题专项 · 不计入周目标';
@@ -506,7 +490,7 @@
 
     var details = '';
     if (r.wrong.length) {
-      details += '<div class="detail-label">错题（已重练一遍）</div>' +
+      details += '<div class="detail-label">错题</div>' +
         '<div class="chips">' + chips(r.wrong, 'is-bad', false) + '</div>';
     }
     if (r.slow.length) {
@@ -609,16 +593,28 @@
   /* ---------- 导航 ---------- */
 
   function goHome(force) {
-    if (!force && state.screen === 'practice' && state.session && state.session.answers.length) {
-      showExitConfirm();
-      return;
+    var session = state.session;
+    if (!force && state.screen === 'practice' && session) {
+      // 已经答满：直接结算，不再提示「还没做完」
+      if (session.answers.length >= session.total) {
+        finishSession();
+        return;
+      }
+      if (session.answers.length > 0) {
+        showExitConfirm(session.answers.length, session.total);
+        return;
+      }
     }
     renderHome();
   }
 
-  function showExitConfirm() {
+  function showExitConfirm(answered, total) {
     var bar = document.getElementById('exitConfirm');
     if (!bar) return;
+    var msg = bar.querySelector('.exit-msg');
+    if (msg) {
+      msg.textContent = '还差 ' + Math.max(0, total - answered) + ' 题完成本轮，退出不会记录成绩。';
+    }
     bar.hidden = false;
     var stay = bar.querySelector('[data-action="exit-no"]');
     if (stay) stay.focus();
