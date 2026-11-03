@@ -213,6 +213,12 @@
     var cards = skill.buildSession(opts || {});
     if (!cards || !cards.length) { toast('这个项目还没有题目'); return; }
 
+    try {
+      if (PC.audio.preload) {
+        PC.audio.preload(cards.map(function (c) { return c.freq; }));
+      }
+    } catch (e) { /* 声音预载失败不影响练习 */ }
+
     state.skill = skill;
     state.session = {
       skillId: skill.id,
@@ -675,7 +681,7 @@
     PC.store.save();
     syncChrome();
     if (s.sound) PC.audio.note(523.25);
-    toast(s.sound ? '提示音已打开' : '提示音已关闭');
+    toast(s.sound ? '提示音已打开 · 没听到请检查静音键和音量' : '提示音已关闭');
   }
 
   /* ---------- 事件 ---------- */
