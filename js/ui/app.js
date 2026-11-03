@@ -89,6 +89,7 @@
 
   function renderHome() {
     clearTimers();
+    try { window.scrollTo(0, 0); } catch (e) { /* ignore */ }
     state.screen = 'home';
     state.skill = null;
     state.session = null;
@@ -233,6 +234,7 @@
   function renderPracticeShell() {
     var skill = state.skill;
     var session = state.session;
+    try { window.scrollTo(0, 0); } catch (e) { /* ignore */ }
 
     appEl.innerHTML =
       '<section class="practice" aria-label="' + esc(skill.title) + '">' +
@@ -240,6 +242,13 @@
           '<button class="back-btn" type="button" data-action="quit" aria-label="退出练习">←</button>' +
           '<div class="practice-title">' + esc(skill.title) + '<span>' + esc(skill.week) + '</span></div>' +
           '<div class="practice-timer" id="practiceTimer">0.0s</div>' +
+        '</div>' +
+        '<div class="exit-confirm" id="exitConfirm" hidden>' +
+          '<p>本轮还没做完，退出不会记录成绩。</p>' +
+          '<div class="exit-actions">' +
+            '<button class="btn btn-ghost" type="button" data-action="exit-no">继续练</button>' +
+            '<button class="btn btn-danger" type="button" data-action="exit-yes">退出</button>' +
+          '</div>' +
         '</div>' +
         '<div class="progress" id="progress"></div>' +
         '<div class="stage" id="stage">' +
@@ -317,44 +326,63 @@
     session.locked = true;
     stopTick();
 
-    var timerEl = document.getElementById('practiceTimer');
-    if (timerEl) {
-      timerEl.textContent = fmtSec(ms);
-      timerEl.classList.toggle('is-slow', ms > 3000);
-    }
-
     session.answers.push({ card: card, value: value, ok: ok, ms: ms, requeue: session.requeue });
     if (!session.requeue && !ok) session.wrong.push(card);
 
-    Array.prototype.forEach.call(document.querySelectorAll('.opt'), function (b) {
-      b.disabled = true;
-      if (b.dataset.answer === card.letter) b.classList.add('is-right');
-      else if (b.dataset.answer === value) b.classList.add('is-wrong');
-    });
-
-    document.getElementById('stage').classList.add(ok ? 'is-ok' : 'is-bad');
-
-    var detail = skill.explain(card);
-    var isLast = session.index + 1 >= session.cards.length;
-
-    document.getElementById('feedback').innerHTML =
-      '<div class="feedback ' + (ok ? 'ok' : 'bad') + '">' +
-        '<span class="fb-mark" aria-hidden="true">' + (ok ? '✓' : '✕') + '</span>' +
-        '<div class="fb-text">' +
-          '<p class="fb-main">' + esc(detail.main) + '</p>' +
-          '<p class="fb-sub">' + esc(detail.sub) + '</p>' +
-          (!ok && detail.hint ? '<p class="fb-hint">' + esc(detail.hint) + '</p>' : '') +
-        '</div>' +
-        '<button class="fb-next" type="button" data-action="next">' + (isLast ? '完成 →' : '继续 →') + '</button>' +
-      '</div>';
-
-    if (ok) PC.audio.note(detail.freq || card.freq);
-    else PC.audio.wrong();
-
+    // 先排好下一题：后面任何一步出错（画反馈、播声音）都不会把整轮卡死
     state.advanceTimer = setTimeout(nextCard, ok ? 1100 : 2200);
+
+    try {
+      var timerEl = document.getElementById('practiceTimer');
+      if (timerEl) {
+        timerEl.textContent = fmtSec(ms);
+        timerEl.classList.toggle('is-slow', ms > 3000);
+      }
+
+      Array.prototype.forEach.call(document.querySelectorAll('.opt'), function (b) {
+        b.disabled = true;
+        if (b.dataset.answer === card.letter) b.classList.add('is-right');
+        else if (b.dataset.answer === value) b.classList.add('is-wrong');
+      });
+
+      document.getElementById('stage').classList.add(ok ? 'is-ok' : 'is-bad');
+
+      var detail = skill.explain(card);
+      var isLast = session.index + 1 >= session.cards.length;
+
+      document.getElementById('feedback').innerHTML =
+        '<div class="feedback ' + (ok ? 'ok' : 'bad') + '">' +
+          '<span class="fb-mark" aria-hidden="true">' + (ok ? '✓' : '✕') + '</span>' +
+          '<div class="fb-text">' +
+            '<p class="fb-main">' + esc(detail.main) + '</p>' +
+            '<p class="fb-sub">' + esc(detail.sub) + '</p>' +
+            (!ok && detail.hint ? '<p class="fb-hint">' + esc(detail.hint) + '</p>' : '') +
+          '</div>' +
+          '<button class="fb-next" type="button" data-action="next">' + (isLast ? '完成 →' : '继续 →') + '</button>' +
+        '</div>';
+    } catch (err) {
+      reportError(err);
+    }
+
+    try {
+      if (ok) PC.audio.note(card.freq);
+      else PC.audio.wrong();
+    } catch (err) {
+      /* 音效失败不影响答题流程 */
+    }
   }
 
   function nextCard() {
+    try {
+      nextCardInner();
+    } catch (err) {
+      // 哪怕换题出错，也要保证这轮能走到结算
+      reportError(err);
+      finishSession();
+    }
+  }
+
+  function nextCardInner() {
     if (state.advanceTimer) { clearTimeout(state.advanceTimer); state.advanceTimer = 0; }
     var session = state.session;
     if (!session || !session.locked) return;
@@ -388,12 +416,16 @@
     if (!session || !skill) return;
 
     var first = session.answers.filter(function (a) { return !a.requeue; });
+    if (!first.length) { goHome(true); return; }
+
     var total = first.length;
     var correct = first.filter(function (a) { return a.ok; }).length;
     var ms = first.reduce(function (sum, a) { return sum + a.ms; }, 0);
     var standardMs = total === 12 ? 45000 : null;
     var pass = standardMs === null ? null : (correct === total && ms <= standardMs);
-    var round = PC.store.summary().todayCount + 1;
+
+    var round = 1;
+    try { round = PC.store.summary().todayCount + 1; } catch (err) { reportError(err); }
 
     var result = {
       skillId: skill.id,
@@ -408,19 +440,29 @@
       round: round
     };
 
-    PC.store.record({
-      skillId: skill.id,
-      total: total,
-      correct: correct,
-      ms: Math.round(ms),
-      pass: pass === true
-    });
+    try {
+      PC.store.record({
+        skillId: skill.id,
+        total: total,
+        correct: correct,
+        ms: Math.round(ms),
+        pass: pass === true
+      });
+    } catch (err) {
+      reportError(err);
+    }
 
     state.lastResult = result;
     state.session = null;
     state.screen = 'result';
     setTitle('结果');
-    renderResult();
+
+    try {
+      renderResult();
+    } catch (err) {
+      reportError(err);
+      showResultFallback();
+    }
   }
 
   /* ---------- 结果 ---------- */
@@ -434,6 +476,7 @@
   }
 
   function renderResult() {
+    try { window.scrollTo(0, 0); } catch (e) { /* ignore */ }
     var r = state.lastResult;
     var isFull = r.total === 12;
     var headline, badge, badgeCls, sub;
@@ -505,6 +548,7 @@
 
   function openReference() {
     clearTimers();
+    try { window.scrollTo(0, 0); } catch (e) { /* ignore */ }
     var skill = PC.getSkill('note-treble');
     state.screen = 'reference';
     state.session = null;
@@ -566,9 +610,67 @@
 
   function goHome(force) {
     if (!force && state.screen === 'practice' && state.session && state.session.answers.length) {
-      if (!window.confirm('这一轮还没做完，退出不会记录成绩。确定退出？')) return;
+      showExitConfirm();
+      return;
     }
     renderHome();
+  }
+
+  function showExitConfirm() {
+    var bar = document.getElementById('exitConfirm');
+    if (!bar) return;
+    bar.hidden = false;
+    var stay = bar.querySelector('[data-action="exit-no"]');
+    if (stay) stay.focus();
+  }
+
+  function hideExitConfirm() {
+    var bar = document.getElementById('exitConfirm');
+    if (bar) bar.hidden = true;
+  }
+
+  /* ---------- 出错兜底 ---------- */
+
+  var errorShown = false;
+
+  function reportError(err) {
+    try { console.error('[乐理日课]', err); } catch (e) { /* ignore */ }
+    if (errorShown) return;
+    errorShown = true;
+    try {
+      var bar = document.createElement('div');
+      bar.className = 'error-bar';
+      bar.setAttribute('role', 'alert');
+      bar.innerHTML = '<span>页面出了点问题，本轮可能没记上。</span>' +
+        '<button type="button" class="error-home">回首页</button>' +
+        '<button type="button" class="error-reload">刷新</button>';
+      document.body.appendChild(bar);
+
+      bar.querySelector('.error-home').addEventListener('click', function () {
+        errorShown = false;
+        if (bar.parentNode) bar.parentNode.removeChild(bar);
+        state.session = null;
+        state.screen = 'home';
+        try { renderHome(); } catch (e) { location.reload(); }
+      });
+      bar.querySelector('.error-reload').addEventListener('click', function () {
+        location.reload();
+      });
+    } catch (e) {
+      /* 兜底本身出错就不再处理 */
+    }
+  }
+
+  function showResultFallback() {
+    appEl.innerHTML =
+      '<section class="result">' +
+        '<p class="result-kicker">结算出错</p>' +
+        '<h2>这轮成绩没算出来</h2>' +
+        '<p class="result-sub">记录没有保存。回首页可以直接重开一轮。</p>' +
+        '<div class="result-actions">' +
+          '<button class="btn btn-primary" type="button" data-action="home">回首页</button>' +
+        '</div>' +
+      '</section>';
   }
 
   function toggleSound() {
@@ -613,6 +715,10 @@
       nextCard();
     } else if (action === 'quit') {
       goHome();
+    } else if (action === 'exit-yes') {
+      goHome(true);
+    } else if (action === 'exit-no') {
+      hideExitConfirm();
     } else if (action === 'home') {
       goHome(true);
     } else if (action === 'reference') {
@@ -643,6 +749,8 @@
     }
 
     if (e.key === 'Escape') {
+      var confirmBar = document.getElementById('exitConfirm');
+      if (confirmBar && !confirmBar.hidden) { hideExitConfirm(); return; }
       if (state.screen !== 'home') goHome();
       return;
     }
@@ -655,6 +763,10 @@
   });
 
   /* ---------- 启动 ---------- */
+
+  window.addEventListener('error', function (e) {
+    reportError(e.error || e.message);
+  });
 
   syncChrome();
   renderHome();

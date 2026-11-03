@@ -17,7 +17,10 @@
       try { ctx = new Ctx(); } catch (e) { return null; }
     }
     if (ctx.state === 'suspended') {
-      try { ctx.resume(); } catch (e) { /* 等用户手势 */ }
+      try {
+        var p = ctx.resume();
+        if (p && p.catch) p.catch(function () { /* 等用户手势 */ });
+      } catch (e) { /* 等用户手势 */ }
     }
     return ctx;
   }
@@ -29,7 +32,7 @@
   /**
    * 弹一个有钢琴骨架的单音：基音三角波 + 2/3 次泛音，指数衰减。
    */
-  function note(freq, opts) {
+  function playNote(freq, opts) {
     if (!enabled() || !freq) return;
     var c = ensure();
     if (!c) return;
@@ -63,7 +66,7 @@
   }
 
   /** 答错声：短促下坠，不刺耳 */
-  function wrong() {
+  function playWrong() {
     if (!enabled()) return;
     var c = ensure();
     if (!c) return;
@@ -81,6 +84,15 @@
     g.connect(c.destination);
     osc.start(t);
     osc.stop(t + 0.25);
+  }
+
+  // 音频永远不能影响答题流程：内部再出错也静默吞掉
+  function note(freq, opts) {
+    try { playNote(freq, opts); } catch (e) { /* ignore */ }
+  }
+
+  function wrong() {
+    try { playWrong(); } catch (e) { /* ignore */ }
   }
 
   PC.audio = {
